@@ -1,0 +1,45 @@
+name: Release
+
+# 推送 v* 标签触发：构建 Windows NSIS 安装包 → 上传到 GitHub Release
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: 构建并发布（Windows / NSIS 安装包）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 缓存 Cargo 编译产物
+        uses: Swatinem/rust-cache@v2
+
+      # tauri-action：跑 tauri build（自动先 npm run build）、
+      # 建 Release 并上传 setup.exe
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "WeBodown v__VERSION__"
+          releaseBody: "新用户从下方 Assets 下载安装包（WeBodown_0.1.0_x64-setup.exe）。"
+          releaseDraft: false
+          prerelease: false
