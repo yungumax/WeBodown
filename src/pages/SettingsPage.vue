@@ -1,6 +1,6 @@
 <script setup>
 import Icon from "../components/Icon.vue";
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { animate, stagger } from "animejs";
 import * as api from "../api";
 
@@ -931,7 +931,25 @@ async function cleanup(kind) {
                   已是最新版本（v{{ updateResult.current }}）
                 </template>
                 <template v-else>
-                  发现新版本 v{{ updateResult.latest }}，可到 Releases 页面下载。
+                  发现新版本 v{{ updateResult.latest }}。
+                  <button
+                    v-if="!installed"
+                    class="primary"
+                    style="margin-left: 10px"
+                    :disabled="downloading"
+                    @click="installUpdate"
+                  >
+                    {{ downloading ? `下载并安装中 ${downloadPct}%` : "下载并安装" }}
+                  </button>
+                  <button
+                    v-else
+                    class="primary"
+                    style="margin-left: 10px"
+                    @click="api.relaunchApp()"
+                  >
+                    立即重启
+                  </button>
+                  <span v-if="downloading" class="num" style="margin-left: 8px">{{ downloadPct }}%</span>
                 </template>
               </p>
             </div>

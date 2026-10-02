@@ -14,6 +14,9 @@ VC_INC="$WBO_WIN\\.lldbin\\headers_extract\\Program Files\\Microsoft Visual Stud
 # 现代工具集（VC 14.44 vsix）：cl.exe + mspdb140.dll + 语言资源，cc-rs / rc.exe 用
 VC1444_BIN="$WBO_WIN\\.lldbin\\vc1444\\Contents\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64"
 
+# 更新包签名密钥（createUpdaterArtifacts 需要本地签名）
+export TAURI_SIGNING_PRIVATE_KEY_PATH="D:\Zcode\_data\tauri-keys\bilidown.key"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 export RUSTFLAGS="-C linker=$WBO_WIN/.lldbin/lld-link.exe -C link-arg=/nodefaultlib:msvcrt -C link-arg=/nodefaultlib:OLDNAMES -C link-arg=libcmt.lib -C link-arg=libucrt.lib -C link-arg=libvcruntime.lib"
 # stubs：legacy_stdio_definitions.lib 的空壳替代（rustc 固定传参；std 实际未引用其中符号）
 export LIB="$VC_LIB;$WBO_WIN\\.lldbin\\crt1444\\Contents\\VC\\Tools\\MSVC\\14.44.35207\\lib\\x64;$WBO_WIN\\.lldbin\\stubs;$SDK\\Lib\\$SDK_VER\\ucrt\\x64;$SDK\\Lib\\$SDK_VER\\um\\x64"

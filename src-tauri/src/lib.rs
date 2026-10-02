@@ -17,6 +17,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // 自动更新：检测/下载/安装走 GitHub Releases 签名更新包；
+        // process 插件用于安装完成后 relaunch
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(state)
         // 兜底：页面加载完成即显示窗口（正常路径是前端挂载后主动调用）
         .on_page_load(|window, payload| {

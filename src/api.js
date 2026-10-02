@@ -130,7 +130,40 @@ export async function cleanupTemp() {
   return invokeZh("cleanup_temp");
 }
 
-// 更新检测：后端查 GitHub Releases 最新 tag 并与当前版本比较
+// 更新检测（优先 updater 插件：带签名校验，返回 Update 对象可下载安装；
+// 插件不可用返回 null 由调用方回退 GitHub API 只读检测）
+export async function updateCheckPlugin() {
+  if (!hasTauri) return null;
+  const { check } = await import("@tauri-apps/plugin-updater");
+  return check();
+}
+
+// 下载并安装更新（onProgress 收字节流进度）
+export async function updateDownloadAndInstall(update, onProgress) {
+  let received = 0;
+  let total = 0;
+  await update.downloadAndInstall((event) => {
+    switch (event.event) {
+      case "Started":
+        total = event.data.contentLength || 0;
+        break;
+      case "Progress":
+        received += event.data.chunkLength;
+        break;
+      case "Finished":
+        break;
+    }
+    if (onProgress) onProgress({ received, total });
+  });
+}
+
+// 安装完成后重启应用
+export async function relaunchApp() {
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  return relaunch();
+}
+
+// 更新检测：后端查 GitHub Releases 最新 tag 并与当前版本比较（只读回退路径）
 export async function checkUpdates() {
   if (!hasTauri) return { current: "0.1.0", latest: "", up_to_date: true, error: "" };
   return invokeZh("check_updates");
