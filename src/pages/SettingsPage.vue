@@ -1572,8 +1572,8 @@ input::placeholder {
 
 .switch .knob {
   position: absolute;
-  top: 2.5px;
-  left: 3px;
+  top: 1px;
+  left: 2px;
   width: 19px;
   height: 19px;
   background: #fff;
