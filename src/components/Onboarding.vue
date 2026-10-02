@@ -114,12 +114,11 @@ function skip() {
       </div>
 
       <div class="actions">
-        <button class="ghost" @click="skip">跳过，稍后在设置中配置</button>
-        <span class="spacer"></span>
         <button class="primary" :disabled="busy" @click="finish">
           <Icon name="check" />
           开始使用
         </button>
+        <button class="ghost" @click="skip">跳过，稍后在设置中配置</button>
       </div>
     </div>
   </div>
@@ -260,13 +259,18 @@ input:focus {
   margin-top: 20px;
 }
 
-.spacer {
+.actions .ghost,
+.actions .primary {
   flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .primary {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   padding: 8px 20px;
   font-weight: 600;

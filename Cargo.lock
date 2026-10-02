@@ -4443,7 +4443,7 @@ dependencies = [
 
 [[package]]
 name = "webodown"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "reqwest 0.12.28",

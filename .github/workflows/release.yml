@@ -1,6 +1,7 @@
 name: Release
 
 # 推送 v* 标签触发：构建 Windows NSIS 安装包 → 上传到 GitHub Release
+# Release 正文自动取 README.md 内容
 on:
   push:
     tags:
@@ -15,6 +16,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: 读取 README 作为 Release 正文
+        id: readme
+        shell: bash
+        run: |
+          {
+            echo 'body<<README_EOF'
+            cat README.md
+            echo 'README_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -32,7 +43,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # tauri-action：跑 tauri build（自动先 npm run build）、
-      # 建 Release 并上传 setup.exe
+      # 建 Release（正文 = README）并上传 setup.exe
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
         env:
@@ -40,6 +51,6 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "WeBodown v__VERSION__"
-          releaseBody: "新用户从下方 Assets 下载安装包（WeBodown_0.1.0_x64-setup.exe）。"
+          releaseBody: ${{ steps.readme.outputs.body }}
           releaseDraft: false
           prerelease: false
