@@ -25,6 +25,12 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+type PauseFlag = Arc<std::sync::atomic::AtomicBool>;
+
+fn flag_set(flag: &PauseFlag) -> bool {
+    flag.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 把头像下载下来转成 data URL 内嵌进 LoginInfo：
 /// sinaimg CDN 在 WebView2 里偶发加载失败（curl 直连却 200，实测踩过），
 /// 后端用 reqwest（已验证可靠）下载一次，前端就与 CDN 彻底解耦。
@@ -506,12 +512,15 @@ pub async fn start_download(
     };
     emit_task(&app, &task);
 
-    let handle = tokio::spawn(run_task(app.clone(), req, id.clone()));
+    let pause = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handle = tokio::spawn(run_task(app.clone(), req.clone(), id.clone()));
     state.tasks.lock().unwrap().insert(
         id.clone(),
         crate::state::TaskEntry {
             snapshot: Arc::new(Mutex::new(task)),
             abort: Some(handle.abort_handle()),
+            req,
+            pause,
         },
     );
     Ok(id)
@@ -519,20 +528,25 @@ pub async fn start_download(
 
 #[tauri::command]
 pub fn cancel_download(app: tauri::AppHandle, state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let entry = state.tasks.lock().unwrap().get(&task_id).map(|e| {
-        if let Some(abort) = &e.abort {
-            abort.abort();
-        }
-        e.snapshot.clone()
-    });
-    if let Some(snapshot) = entry {
-        let mut task = snapshot.lock().unwrap().clone();
+    let snapshot = {
+        let tasks = state.tasks.lock().unwrap();
+        tasks.get(&task_id).map(|e| {
+            if let Some(abort) = &e.abort {
+                abort.abort();
+            }
+            e.snapshot.clone()
+        })
+    };
+    if let Some(snapshot) = snapshot {
+        let mut task = snapshot.lock().unwrap();
+        // 必须写回快照本体：孤儿 reporter 每 500ms 会重播快照，
+        // 只改克隆的话「已取消」立刻被覆盖回「下载中」
         if !matches!(task.status.as_str(), "done" | "failed" | "canceled") {
             task.status = "canceled".into();
             task.message = "已取消".into();
             task.speed_bps = 0.0;
-            emit_task(&app, &task);
         }
+        emit_task(&app, &task.clone());
     }
     Ok(())
 }
@@ -552,6 +566,24 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
         .get(&id)
         .map(|e| e.snapshot.clone());
     let Some(snapshot) = snapshot else { return };
+    let (pause, entry_req) = {
+        let tasks = state.tasks.lock().unwrap();
+        match tasks.get(&id) {
+            Some(entry) => (entry.pause.clone(), Some(entry.req.clone())),
+            None => (Arc::new(std::sync::atomic::AtomicBool::new(false)), None),
+        }
+    };
+    // 创建后立刻被暂停（如「全部暂停」在排队期间触发）：直接进入暂停态
+    if flag_set(&pause) {
+        let task = {
+            let mut task = snapshot.lock().unwrap();
+            task.status = "paused".into();
+            task.message = "已暂停".into();
+            task.clone()
+        };
+        emit_task(&app, &task);
+        return;
+    }
 
     let settings = state.settings_snapshot();
     let client = state.client();
@@ -562,13 +594,18 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
     let snapshot_done = snapshot.clone();
 
     let done = move |status: &str, message: &str, output: &str| {
-        let mut task = snapshot_done.lock().unwrap().clone();
-        task.status = status.to_string();
-        task.message = message.to_string();
-        task.speed_bps = 0.0;
-        if !output.is_empty() {
-            task.output_path = output.to_string();
-        }
+        let task = {
+            // 必须写回快照本体：只改克隆的话，后端账本停在旧状态，
+            // 「全部暂停」的守卫会把已完成任务再翻成已暂停（实测踩过）
+            let mut t = snapshot_done.lock().unwrap();
+            t.status = status.to_string();
+            t.message = message.to_string();
+            t.speed_bps = 0.0;
+            if !output.is_empty() {
+                t.output_path = output.to_string();
+            }
+            t.clone()
+        };
         emit_task(&app_done, &task);
     };
 
@@ -675,11 +712,6 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
             text_probe.clone()
         };
         if media_probe.exists() || text_probe.exists() {
-            {
-                let mut task = snapshot.lock().unwrap();
-                task.image_pct = 100.0;
-                task.video_pct = 100.0;
-            }
             // 找出该条目已落盘的主文件（跳过时 output 指向文件而非目录）
             let existing = std::fs::read_dir(&base_dir)
                 .ok()
@@ -693,6 +725,21 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
                                 .unwrap_or(false)
                         })
                 });
+            {
+                let mut task = snapshot.lock().unwrap();
+                task.image_pct = 100.0;
+                task.video_pct = 100.0;
+                // 回填文件大小：跳过的任务不显示「0 B」
+                if let Some(size) = existing
+                    .as_ref()
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map(|m| m.len())
+                    .filter(|s| *s > 0)
+                {
+                    task.downloaded = size;
+                    task.total = size;
+                }
+            }
             done(
                 "done",
                 "文件已存在，跳过下载",
@@ -732,6 +779,10 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
             let pic_total_c = pic_total;
             let progress: dl::ProgressFn = Arc::new(move |p| {
                 let mut task = snap.lock().unwrap();
+                // 任务已终局（被取消/暂停）：孤儿 reporter 不再把旧进度播回 UI
+                if matches!(task.status.as_str(), "done" | "failed" | "canceled" | "paused") {
+                    return;
+                }
                 task.downloaded = base_before + p.downloaded;
                 task.total = base_before + p.total;
                 task.speed_bps = p.speed_bps;
@@ -741,12 +792,46 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
                 emit_task(&app_c, &task.clone());
             });
 
-            match dl::download(&client.http, &url, &dest, &opts, progress).await {
-                Ok(size) => {
+            if dest.exists() {
+                // 续传：图片已完成，跳过
+                let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                downloaded_total += size;
+                if primary.is_none() {
+                    primary = Some(dest.clone());
+                }
+                continue;
+            }
+            if flag_set(&pause) {
+                let task = {
+                    let mut task = snapshot.lock().unwrap();
+                    task.status = "paused".into();
+                    task.message = "已暂停".into();
+                    task.clone()
+                };
+                emit_task(&app, &task);
+                return;
+            }
+            // 图片也走断点续传：暂停能在一个分块内停下（普通下载不检查旗标，
+            // 会出现「UI 已暂停、底层还在下」），中止也不会留下半个损坏的图片文件
+            match dl::download_resumable(&client.http, &url, &dest, &opts, progress, Some(pause.clone())).await
+            {
+                Ok(dl::DownloadEnd::Completed(size)) => {
                     downloaded_total += size;
                     if primary.is_none() {
                         primary = Some(dest.clone());
                     }
+                }
+                Ok(dl::DownloadEnd::Paused(size)) => {
+                    let task = {
+                        let mut task = snapshot.lock().unwrap();
+                        task.status = "paused".into();
+                        task.message = "已暂停".into();
+                        task.downloaded = downloaded_total + size;
+                        task.speed_bps = 0.0;
+                        task.clone()
+                    };
+                    emit_task(&app, &task);
+                    return;
                 }
                 Err(e) => {
                     let _ = tokio::fs::remove_file(&dest).await;
@@ -788,6 +873,10 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
         let base_before = downloaded_total;
         let progress: dl::ProgressFn = Arc::new(move |p| {
             let mut task = snap.lock().unwrap();
+            // 任务已终局（被取消/暂停）：孤儿 reporter 不再把旧进度播回 UI
+            if matches!(task.status.as_str(), "done" | "failed" | "canceled" | "paused") {
+                return;
+            }
             task.downloaded = base_before + p.downloaded;
             task.total = base_before + p.total;
             task.speed_bps = p.speed_bps;
@@ -795,8 +884,9 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
             emit_task(&app_c, &task.clone());
         });
 
-        match dl::download(&client.http, &url, &dest, &opts, progress).await {
-            Ok(size) => {
+        match dl::download_resumable(&client.http, &url, &dest, &opts, progress, Some(pause.clone())).await
+        {
+            Ok(dl::DownloadEnd::Completed(size)) => {
                 downloaded_total += size;
                 primary = Some(dest.clone());
                 let mut task = snapshot.lock().unwrap();
@@ -804,6 +894,19 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
                 task.speed_bps = 0.0;
                 task.quality_label = format!("音频 · {label}");
                 emit_task(&app, &task.clone());
+            }
+            Ok(dl::DownloadEnd::Paused(size)) => {
+                let task = {
+                    let mut task = snapshot.lock().unwrap();
+                    task.status = "paused".into();
+                    task.message = "已暂停（点击继续以恢复）".into();
+                    task.downloaded = base_before + size;
+                    task.speed_bps = 0.0;
+                    task.clone()
+                };
+                emit_task(&app, &task);
+                // 暂停后立即返回，流水线停止（.part 保留进度，继续时从断点恢复）
+                return;
             }
             Err(e) => {
                 let _ = tokio::fs::remove_file(&dest).await;
@@ -838,6 +941,10 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
         let base_before = downloaded_total;
         let progress: dl::ProgressFn = Arc::new(move |p| {
             let mut task = snap.lock().unwrap();
+            // 任务已终局（被取消/暂停）：孤儿 reporter 不再把旧进度播回 UI
+            if matches!(task.status.as_str(), "done" | "failed" | "canceled" | "paused") {
+                return;
+            }
             task.downloaded = base_before + p.downloaded;
             task.total = base_before + p.total;
             task.speed_bps = p.speed_bps;
@@ -845,8 +952,9 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
             emit_task(&app_c, &task.clone());
         });
 
-        match dl::download(&client.http, &url, &dest, &opts, progress).await {
-            Ok(size) => {
+        match dl::download_resumable(&client.http, &url, &dest, &opts, progress, Some(pause.clone())).await
+        {
+            Ok(dl::DownloadEnd::Completed(size)) => {
                 downloaded_total += size;
                 primary = Some(dest.clone());
                 let mut task = snapshot.lock().unwrap();
@@ -856,6 +964,19 @@ async fn run_task(app: tauri::AppHandle, req: DownloadReq, id: String) {
                     task.quality_label = format!("视频 · {label}");
                 }
                 emit_task(&app, &task.clone());
+            }
+            Ok(dl::DownloadEnd::Paused(size)) => {
+                let task = {
+                    let mut task = snapshot.lock().unwrap();
+                    task.status = "paused".into();
+                    task.message = "已暂停（点击继续以恢复）".into();
+                    task.downloaded = base_before + size;
+                    task.speed_bps = 0.0;
+                    task.clone()
+                };
+                emit_task(&app, &task);
+                // 暂停后立即返回，流水线停止（.part 保留进度，继续时从断点恢复）
+                return;
             }
             Err(e) => {
                 let _ = tokio::fs::remove_file(&dest).await;
@@ -1283,18 +1404,34 @@ async fn download_direct(
     settings: &Settings,
     client: &WeiboClient,
 ) {
-    let _slot = state.slots().acquire_owned().await;
+    // 调用方 run_task 已持有并发槽，这里不再重复 acquire（双占会在 max=1 时死锁）
+    // 暂停旗标：按快照里的任务 id 从任务表取
+    let pause = {
+        let task_id = snapshot.lock().unwrap().id.clone();
+        state
+            .tasks
+            .lock()
+            .unwrap()
+            .get(&task_id)
+            .map(|e| e.pause.clone())
+            .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    };
     let app_done = app.clone();
     let snapshot_done = snapshot.clone();
 
     let done = move |status: &str, message: &str, output: &str| {
-        let mut task = snapshot_done.lock().unwrap().clone();
-        task.status = status.to_string();
-        task.message = message.to_string();
-        task.speed_bps = 0.0;
-        if !output.is_empty() {
-            task.output_path = output.to_string();
-        }
+        let task = {
+            // 必须写回快照本体：只改克隆的话，后端账本停在旧状态，
+            // 「全部暂停」的守卫会把已完成任务再翻成已暂停（实测踩过）
+            let mut t = snapshot_done.lock().unwrap();
+            t.status = status.to_string();
+            t.message = message.to_string();
+            t.speed_bps = 0.0;
+            if !output.is_empty() {
+                t.output_path = output.to_string();
+            }
+            t.clone()
+        };
         emit_task(&app_done, &task);
     };
 
@@ -1367,6 +1504,10 @@ async fn download_direct(
     let app_c = app.clone();
     let progress: dl::ProgressFn = Arc::new(move |p| {
         let mut task = snap.lock().unwrap();
+        // 任务已终局（被取消/暂停）：孤儿 reporter 不再把旧进度播回 UI
+        if matches!(task.status.as_str(), "done" | "failed" | "canceled" | "paused") {
+            return;
+        }
         task.downloaded = p.downloaded;
         task.total = p.total;
         task.speed_bps = p.speed_bps;
@@ -1376,7 +1517,7 @@ async fn download_direct(
 
     // 直链的签名（ssig）绑定抓取时的桌面 UA：必须用桌面 UA + weibo.com Referer
     // 下载，会话客户端的 iPhone UA 会被 CDN 判 403（实测踩过）
-    let pc_http = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .user_agent(weibo_core::client::PC_UA)
         .default_headers({
             let mut h = reqwest::header::HeaderMap::new();
@@ -1387,8 +1528,18 @@ async fn download_direct(
             h
         })
         .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(300))
-        .build();
+        .timeout(std::time::Duration::from_secs(300));
+    // 用户设置了代理就要带上：直链下载同样走代理（此前绕过，限速/内网环境会失效）
+    let proxy_url = settings.proxy.trim().to_string();
+    if !proxy_url.is_empty() {
+        match reqwest::Proxy::all(&proxy_url) {
+            Ok(p) => builder = builder.proxy(p),
+            Err(e) => {
+                weibo_core::login::debug_log(&format!("直链代理解析失败，按直连处理：{e}"));
+            }
+        }
+    }
+    let pc_http = builder.build();
     let pc_http = match pc_http {
         Ok(c) => c,
         Err(e) => {
@@ -1397,10 +1548,26 @@ async fn download_direct(
         }
     };
 
-    if let Err(e) = dl::download(&pc_http, &req.media_url, &dest, &opts, progress).await {
-        let _ = tokio::fs::remove_file(&dest).await;
-        done("failed", &format!("音频下载失败：{e}"), "");
-        return;
+    // 直链也走断点续传：暂停能在一个分块内停下，中止不损坏目标文件
+    match dl::download_resumable(&pc_http, &req.media_url, &dest, &opts, progress, Some(pause.clone())).await {
+        Ok(dl::DownloadEnd::Completed(_)) => {}
+        Ok(dl::DownloadEnd::Paused(size)) => {
+            let task = {
+                let mut task = snapshot.lock().unwrap();
+                task.status = "paused".into();
+                task.message = "已暂停".into();
+                task.downloaded = size;
+                task.speed_bps = 0.0;
+                task.clone()
+            };
+            emit_task(&app, &task);
+            return;
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&dest).await;
+            done("failed", &format!("音频下载失败：{e}"), "");
+            return;
+        }
     }
 
     let size = tokio::fs::metadata(&dest).await.map(|m| m.len()).unwrap_or(0);
@@ -1497,6 +1664,298 @@ pub fn reveal_path(path: String) -> Result<(), String> {
             .map_err(err)?;
         Ok(())
     }
+}
+
+// ───────────────────────── 暂停 / 继续 ─────────────────────────
+
+fn set_paused(app: &tauri::AppHandle, state: &State<'_, AppState>, task_id: &str) -> Result<(), String> {
+    let tasks = state.tasks.lock().unwrap();
+    let Some(entry) = tasks.get(task_id) else {
+        return Err("任务不存在或已结束".into());
+    };
+    entry.pause.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut task = entry.snapshot.lock().unwrap();
+    if matches!(task.status.as_str(), "queued" | "downloading" | "saving") {
+        task.status = "paused".into();
+        task.message = "已暂停".into();
+        task.speed_bps = 0.0;
+        // 排队中的任务没有下载循环替我们发事件，这里立即广播暂停态
+        emit_task(app, &task.clone());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pause_download(app: tauri::AppHandle, state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    set_paused(&app, &state, &task_id)
+}
+
+#[tauri::command]
+pub fn pause_all_downloads(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
+    let tasks = state.tasks.lock().unwrap();
+    let mut count = 0;
+    for entry in tasks.values() {
+        let mut task = entry.snapshot.lock().unwrap();
+        if matches!(task.status.as_str(), "queued" | "downloading" | "saving") {
+            entry.pause.store(true, std::sync::atomic::Ordering::Relaxed);
+            task.status = "paused".into();
+            task.message = "已暂停".into();
+            task.speed_bps = 0.0;
+            emit_task(&app, &task.clone());
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// 从暂停态恢复：用保存的请求重跑流水线（视频/音频走 .part 断点续传）。
+/// 必须是 async：同步命令跑在主线程，tokio::spawn 在主线程会 panic（应用闪退）。
+#[tauri::command]
+pub async fn resume_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<(), String> {
+    let (req, snapshot) = {
+        let tasks = state.tasks.lock().unwrap();
+        let Some(entry) = tasks.get(&task_id) else {
+            return Err("任务不存在或已结束".into());
+        };
+        if entry.snapshot.lock().unwrap().status != "paused" {
+            return Err("任务不在暂停状态".into());
+        }
+        (entry.req.clone(), entry.snapshot.clone())
+    };
+    {
+        let mut task = snapshot.lock().unwrap();
+        task.status = "queued".into();
+        task.message = "排队中".into();
+        // 立即广播：恢复的任务可能要等并发槽，不发事件 UI 会一直停在「已暂停」
+        emit_task(&app, &task.clone());
+    }
+    // 先换新旗标再 spawn：重跑的 run_task 起始就读旗标，
+    // 旧旗标还停在 true 时会立即再次暂停（表现为「点了继续没反应」）
+    let fresh_pause = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let mut tasks = state.tasks.lock().unwrap();
+        let Some(entry) = tasks.get_mut(&task_id) else {
+            return Err("任务不存在或已结束".into());
+        };
+        entry.pause = fresh_pause;
+        // 先中止旧的 run_task 再 spawn：旗标只让下载循环在分块边界退出，
+        // 旧任务的收尾窗口里还占着并发槽，不中止会让新任务一直停在排队中
+        if let Some(old) = entry.abort.take() {
+            old.abort();
+        }
+    }
+    let handle = tokio::spawn(run_task(app, req, task_id.clone()));
+    if let Some(entry) = state.tasks.lock().unwrap().get_mut(&task_id) {
+        entry.abort = Some(handle.abort_handle());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resume_all_downloads(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let paused: Vec<String> = {
+        let tasks = state.tasks.lock().unwrap();
+        tasks
+            .iter()
+            .filter(|(_, e)| e.snapshot.lock().unwrap().status == "paused")
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    let count = paused.len();
+    for task_id in paused {
+        // resume_download 是 async：在 async 命令里逐个 await，
+        // 内部只是换旗标 + spawn，不会真的阻塞
+        let _ = resume_download(app.clone(), state.clone(), task_id).await;
+    }
+    Ok(count)
+}
+
+/// 一次重命名动作的结果（预演与实操共用）。
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenamePlan {
+    pub renamed: usize,
+    pub skipped: usize,
+    pub missing: usize,
+    pub details: Vec<String>,
+    pub dry_run: bool,
+}
+
+/// 按当前命名规则，把已下载的条目重命名成新编号。
+///
+/// 只改"条目名"（编号 + 标题），**不动目录层级**：层级由「文件夹」规则决定，
+/// 磁盘上的层级是历史结果，重算它需要重新联网确认归属（代价高、会触发风控）。
+///
+/// 匹配方式：在输出目录里递归找"去掉数字前缀后与条目标题相同"的文件，
+/// 命中就原地改名；找不到的条目记进 missing，不做任何猜测。
+#[tauri::command]
+pub async fn rename_downloaded(
+    state: State<'_, AppState>,
+    input: String,
+    total: usize,
+    dry_run: bool,
+) -> Result<RenamePlan, String> {
+    let settings = state.settings_snapshot();
+    let key = match parse_input(&input) {
+        Ok(SourceTarget::User(uid)) => format!("user:{uid}"),
+        _ => input.trim().to_string(),
+    };
+    let cache = {
+        let batches = state.batches.lock().unwrap();
+        batches.get(&key).cloned()
+    };
+    let Some(cache) = cache else {
+        return Err("这个来源的解析结果已过期，请重新解析后再试".into());
+    };
+    let count = cache.items.len();
+    let pad = format!("{total}").len().max(2);
+
+    let mut plan = RenamePlan { dry_run, ..Default::default() };
+
+    for (position, item) in cache.items.iter().enumerate() {
+        let index = if total > 0 { std::cmp::max(total - position, 1) } else { position + 1 };
+        let mut vars: HashMap<String, String> = HashMap::new();
+        vars.insert("title".into(), item.title.clone());
+        vars.insert("author".into(), item.author.clone());
+        vars.insert("bid".into(), item.bid.clone());
+        vars.insert("mid".into(), item.mid.clone());
+        vars.insert("uid".into(), cache.uid.to_string());
+        let (y, m, d) = {
+            let secs = item.created_at + 8 * 3600;
+            let days = secs.div_euclid(86400);
+            let z = days + 719468;
+            let era = if z >= 0 { z } else { z - 146096 } / 146097;
+            let doe = z - era * 146097;
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+            let yr = yoe + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let dd = (doy - (153 * mp + 2) / 5 + 1) as u32;
+            let mm = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+            (if mm <= 2 { yr + 1 } else { yr }, mm, dd)
+        };
+        vars.insert("publish_date".into(), format!("{y}-{m:02}-{d:02}"));
+        vars.insert("year".into(), format!("{y}"));
+        vars.insert("month".into(), format!("{m:02}"));
+        vars.insert("date".into(), format!("{y}-{m:02}-{d:02}"));
+
+        // 条目名：视频/音频是文件名，图文是文件夹名（这里都是文件）
+        let wanted_stem = naming::render(&settings.naming_template, &vars, false);
+
+        let found =
+            find_downloaded_by_title(&settings.output_dir, &item.title, &wanted_stem).await;
+        match found {
+            Some(found) => {
+                // 扩展名沿用原文件（音频是 m4a、视频是 mp4，按封装去猜会改错）
+                let wanted = match found.extension() {
+                    Some(ext) if !ext.is_empty() => {
+                        format!(
+                            "{}.{}",
+                            std::path::Path::new(&wanted_stem)
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                            ext.to_string_lossy()
+                        )
+                    }
+                    _ => wanted_stem.clone(),
+                };
+                if found
+                    .file_name()
+                    .map(|s| s.to_string_lossy() == wanted)
+                    .unwrap_or(false)
+                {
+                    plan.skipped += 1;
+                    continue;
+                }
+                let target = found.with_file_name(&wanted);
+                if target.exists() {
+                    plan.skipped += 1;
+                    plan.details.push(format!("跳过（同名已存在）：{wanted}"));
+                    continue;
+                }
+                let from = found
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                plan.details.push(format!("{from}  →  {wanted}"));
+                if !dry_run {
+                    tokio::fs::rename(&found, &target)
+                        .await
+                        .map_err(|e| format!("重命名失败 {from}: {e}"))?;
+                }
+                plan.renamed += 1;
+            }
+            None => {
+                plan.missing += 1;
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// 在输出目录里递归找"去掉数字前缀后与标题相同"的文件。
+///
+/// 只认两种形态：`标题` 与 `数字前缀 + 标题（可带扩展名）`，其余一律不动——
+/// 宁可少改，也不猜错。
+async fn find_downloaded_by_title(
+    root: &std::path::Path,
+    title: &str,
+    wanted: &str,
+) -> Option<std::path::PathBuf> {
+    let wanted_stem = std::path::Path::new(wanted)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| wanted.to_string());
+    let wanted_title = strip_number_prefix(&wanted_stem);
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                stack.push(path.clone());
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| name.clone());
+            let bare = strip_number_prefix(&stem);
+            if bare == wanted_title || bare == title || stem == wanted_stem {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// 去掉开头的"编号 + 分隔符"：`001 标题` / `12-标题` / `3 标题` 都还原成标题。
+fn strip_number_prefix(name: &str) -> String {
+    let trimmed = name.trim_start();
+    let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return trimmed.trim().to_string();
+    }
+    trimmed[digits.len()..]
+        .trim_start_matches([' ', '-', '_', '.', '、', '·'])
+        .trim()
+        .to_string()
 }
 
 // ───────────────────────── 应用更新 ─────────────────────────

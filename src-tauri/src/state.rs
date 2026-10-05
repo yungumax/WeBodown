@@ -16,6 +16,10 @@ pub const DEFAULT_FOLDER_TEMPLATE: &str = "{author}/{year}-{month}";
 pub struct TaskEntry {
     pub snapshot: Arc<Mutex<TaskUpdate>>,
     pub abort: Option<tokio::task::AbortHandle>,
+    /// 原始下载请求：暂停后「继续」需要重跑流水线
+    pub req: crate::types::DownloadReq,
+    /// 暂停开关：置 true 后下载循环停在下一个分块（进度留在 .part）
+    pub pause: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// 批量来源（用户主页 / 收藏）的增量加载缓存：

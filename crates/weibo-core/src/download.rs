@@ -6,7 +6,7 @@
 use crate::error::{Result, WeiboError};
 use futures::StreamExt;
 use reqwest::Client;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -133,4 +133,163 @@ pub fn image_variant(url: &str, spec: &str) -> String {
         // 原图：large 已是最大规格（gif 的 large 即原图）
         url.replace("/thumb360/", "/large/").replace("/orj1080/", "/large/")
     }
+}
+
+/// 下载结束形态：完整落盘，或因暂停而中止（进度保留在 .part，等待续传）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadEnd {
+    Completed(u64),
+    Paused(u64),
+}
+
+/// 暂停开关：置 true 后下载循环在下一个分块退出（进度保留在 .part 文件里）。
+pub type PauseFlag = Arc<std::sync::atomic::AtomicBool>;
+
+/// 可暂停、可断点续传的下载：进度写在 `<目标>.part`，完成后改名为目标。
+/// 续传时若 .part 存在则带 Range 头追加；服务器不支持 Range（返回整包 200）时从头重来。
+pub async fn download_resumable(
+    http: &Client,
+    url: &str,
+    dest: &Path,
+    opts: &DownloadOptions,
+    progress: ProgressFn,
+    pause: Option<PauseFlag>,
+) -> Result<DownloadEnd> {
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+    }
+    let part = part_path(dest);
+
+    let mut delay = Duration::from_millis(500);
+    let mut last_err = WeiboError::Unavailable("未知错误".into());
+
+    for attempt in 0..=opts.retries {
+        if attempt > 0 {
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+        }
+        // 暂停请求在重试等待期也生效
+        if pause.as_ref().map(|f| f.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false) {
+            return Ok(DownloadEnd::Paused(part_len(&part)));
+        }
+        match download_resumable_once(http, url, &part, &progress, pause.clone()).await {
+            Ok(DownloadEnd::Completed(size)) => {
+                tokio::fs::rename(part, dest).await?;
+                progress(Progress { downloaded: size, total: size, speed_bps: 0.0 });
+                return Ok(DownloadEnd::Completed(size));
+            }
+            Ok(DownloadEnd::Paused(size)) => {
+                return Ok(DownloadEnd::Paused(size));
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
+
+fn part_path(dest: &Path) -> PathBuf {
+    match dest.extension() {
+        Some(ext) => dest.with_extension(format!(
+            "{}.part",
+            ext.to_string_lossy()
+        )),
+        None => PathBuf::from(format!("{}.part", dest.display())),
+    }
+}
+
+fn part_len(part: &Path) -> u64 {
+    std::fs::metadata(part).map(|m| m.len()).unwrap_or(0)
+}
+
+async fn download_resumable_once(
+    http: &Client,
+    url: &str,
+    part: &Path,
+    progress: &ProgressFn,
+    pause: Option<PauseFlag>,
+) -> Result<DownloadEnd> {
+    use std::sync::atomic::Ordering;
+    use tokio::io::AsyncWriteExt;
+
+    let offset = part_len(part);
+    let mut req = http.get(url);
+    if offset > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    // 416 = 断点越界：.part 可能已经完整（暂停过冲或服务端长度变化）。
+    // 用 Content-Range 里的总长核对：一致则视为下载完成（外层负责改名），
+    // 不一致则丢弃 .part，外层重试时从头下载。
+    if status.as_u16() == 416 {
+        let total_remote = resp
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.rsplit('/').next().and_then(|t| t.parse::<u64>().ok()));
+        if total_remote == Some(offset) && offset > 0 {
+            return Ok(DownloadEnd::Completed(offset));
+        }
+        let _ = tokio::fs::remove_file(part).await;
+        return Err(WeiboError::Unavailable("断点越界，已重置续传".into()));
+    }
+    if !status.is_success() {
+        return Err(WeiboError::Unavailable(format!("下载失败 HTTP {status}")));
+    }
+    // 服务器不支持 Range（整包 200）→ 从头重来
+    let restart = status.as_u16() == 200 && offset > 0;
+    let base = if restart { 0 } else { offset };
+    let total = resp.content_length().map(|l| l + base).unwrap_or(0);
+
+    let downloaded = Arc::new(AtomicU64::new(base));
+    let reporter = {
+        let downloaded = downloaded.clone();
+        let progress = progress.clone();
+        tokio::spawn(async move {
+            let start = Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let now = downloaded.load(Ordering::Relaxed);
+                let elapsed = start.elapsed().as_secs_f64();
+                progress(Progress {
+                    downloaded: now,
+                    total,
+                    speed_bps: if elapsed > 0.0 { now as f64 / elapsed } else { 0.0 },
+                });
+            }
+        })
+    };
+
+    let mut file = if restart {
+        tokio::fs::File::create(part).await?
+    } else {
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(part)
+            .await?
+    };
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        if pause.as_ref().map(|f| f.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false) {
+            reporter.abort();
+            file.flush().await?;
+            let size = downloaded.load(Ordering::Relaxed);
+            return Ok(DownloadEnd::Paused(size));
+        }
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+    }
+    file.flush().await?;
+
+    reporter.abort();
+    let size = downloaded.load(Ordering::Relaxed);
+    if total > 0 && size != total {
+        return Err(WeiboError::IncompleteDownload { expected: total, actual: size });
+    }
+    Ok(DownloadEnd::Completed(size))
 }

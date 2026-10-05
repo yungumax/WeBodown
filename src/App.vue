@@ -264,6 +264,38 @@ async function openPath(path) {
   }
 }
 
+async function pauseAll() {
+  try {
+    await api.pauseAllDownloads();
+  } catch (error) {
+    showToast(String(error));
+  }
+}
+
+async function resumeAll() {
+  try {
+    await api.resumeAllDownloads();
+  } catch (error) {
+    showToast(String(error));
+  }
+}
+
+async function pauseTask(taskId) {
+  try {
+    await api.pauseDownload(taskId);
+  } catch (error) {
+    showToast(String(error));
+  }
+}
+
+async function resumeTask(taskId) {
+  try {
+    await api.resumeDownload(taskId);
+  } catch (error) {
+    showToast(String(error));
+  }
+}
+
 async function revealPath(path) {
   try {
     await api.revealPath(path);
@@ -387,6 +419,10 @@ async function doLogout() {
           @cancel="cancelTask"
           @open="openPath"
           @reveal="revealPath"
+          @pause="pauseTask"
+          @resume="resumeTask"
+          @pause-all="pauseAll"
+          @resume-all="resumeAll"
           @clear="clearFinished"
         />
         <SettingsPage

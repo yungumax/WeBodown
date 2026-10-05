@@ -618,6 +618,45 @@ async function downloadAll() {
   await startRows([...tableRows.value]);
 }
 
+// 重命名已下载：两段式（防误触），只对批量来源显示
+const renameArmed = ref(false);
+const renaming = ref(false);
+const renameHint = ref("按当前命名规则改已下载条目的编号与标题（不动目录层级）");
+
+async function renameClicked() {
+  const source = activeSource.value;
+  if (!source || !activeIsBatch.value) return;
+  if (renaming.value) return;
+  if (!renameArmed.value) {
+    renaming.value = true;
+    try {
+      const plan = await api.renameDownloaded(source.input, source.probe.total || 0, true);
+      renameArmed.value = true;
+      if (plan.renamed) {
+        emit("toast", `预演完成：可改名 ${plan.renamed} 项，跳过 ${plan.skipped} 项，未找到 ${plan.missing} 项；再点一次「确认改名」执行`);
+      } else {
+        emit("toast", "预演完成：没有找到可改名的条目");
+        renameArmed.value = false;
+      }
+    } catch (error) {
+      emit("toast", String(error));
+    } finally {
+      renaming.value = false;
+    }
+  } else {
+    renaming.value = true;
+    try {
+      const plan = await api.renameDownloaded(source.input, source.probe.total || 0, false);
+      emit("toast", `已重命名 ${plan.renamed} 项（跳过 ${plan.skipped}，未找到 ${plan.missing}）`);
+    } catch (error) {
+      emit("toast", String(error));
+    } finally {
+      renameArmed.value = false;
+      renaming.value = false;
+    }
+  }
+}
+
 // 「下载设置」弹层（清晰度/图片规格）
 const pickingDl = ref(false);
 const dlPanel = ref(null);
@@ -804,6 +843,16 @@ function kindLabel(kind) {
           </template>
         </template>
 
+        <!-- 重命名已下载：批量来源才显示，两段式防误触 -->
+        <button
+          v-if="activeIsBatch"
+          class="ghost"
+          :disabled="renaming"
+          :title="renameHint"
+          @click="renameClicked"
+        >
+          {{ renameArmed ? "确认改名" : "重命名已下载" }}
+        </button>
         <!-- 拉完才给"下载全部"：否则点下去只下载了已加载的那一部分 -->
         <button
           v-if="hasTable && (!activeIsBatch || activeSource.probe.exhausted)"

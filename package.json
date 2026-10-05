@@ -1,7 +1,7 @@
 {
   "name": "webodown",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "微博下载工具桌面端（界面一比一还原 BILIdown）",
   "scripts": {

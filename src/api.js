@@ -64,6 +64,31 @@ export async function startDownload(req) {
   return invokeZh("start_download", { req });
 }
 
+export async function pauseDownload(taskId) {
+  if (!hasTauri) return;
+  return invokeZh("pause_download", { taskId });
+}
+
+export async function resumeDownload(taskId) {
+  if (!hasTauri) return;
+  return invokeZh("resume_download", { taskId });
+}
+
+export async function pauseAllDownloads() {
+  if (!hasTauri) return;
+  return invokeZh("pause_all_downloads");
+}
+
+export async function resumeAllDownloads() {
+  if (!hasTauri) return;
+  return invokeZh("resume_all_downloads");
+}
+
+export async function renameDownloaded(input, total, dryRun) {
+  if (!hasTauri) return { renamed: 0, skipped: 0, missing: 0, details: [], dryRun: true };
+  return invokeZh("rename_downloaded", { input, total, dryRun });
+}
+
 export async function cancelDownload(taskId) {
   if (!hasTauri) return mock.cancel(taskId);
   return invokeZh("cancel_download", { taskId });

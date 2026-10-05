@@ -1,6 +1,6 @@
 [package]
 name = "webodown"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "WeBodown 桌面端"
 license.workspace = true

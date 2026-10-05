@@ -6,18 +6,21 @@ import TaskRow from "../components/TaskRow.vue";
 const props = defineProps({
   tasks: { type: Array, required: true },
 });
-const emit = defineEmits(["cancel", "open", "reveal", "clear"]);
+const emit = defineEmits(["cancel", "open", "reveal", "pause", "resume", "pauseAll", "resumeAll", "clear"]);
 
 const RUNNING = ["queued", "downloading", "saving"];
 
 /** 统计数字滚动：进行中/已结束随任务变化补间，而不是跳变 */
 const runningCount = ref(0);
+const pausedCount = ref(0);
 const finishedCount = ref(0);
 watch(
   () => props.tasks.map((t) => t.status).join(","),
   (statuses) => {
     const list = statuses ? statuses.split(",") : [];
     const running = list.filter((st) => RUNNING.includes(st)).length;
+    const paused = list.filter((st) => st === "paused").length;
+    pausedCount.value = paused;
     const finished = list.length - running;
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
       runningCount.value = running;
@@ -70,6 +73,12 @@ watch(
           {{ runningCount }} 进行中
           <template v-if="finishedCount"> · {{ finishedCount }} 已结束</template>
         </span>
+        <button v-if="runningCount" class="ghost" @click="emit('pauseAll')">
+          全部暂停
+        </button>
+        <button v-if="pausedCount" class="ghost" @click="emit('resumeAll')">
+          全部开始
+        </button>
         <button v-if="finishedCount" class="ghost" @click="emit('clear')">
           清除已结束
         </button>
@@ -89,6 +98,8 @@ watch(
           @cancel="emit('cancel', task.id)"
           @open="emit('open', $event)"
           @reveal="emit('reveal', $event)"
+          @pause="emit('pause', task.id)"
+          @resume="emit('resume', task.id)"
         />
       </ul>
     </section>

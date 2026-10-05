@@ -106,6 +106,11 @@ pub fn run() {
             commands::export_diagnostics,
             commands::check_updates,
             commands::reveal_path,
+            commands::pause_download,
+            commands::resume_download,
+            commands::pause_all_downloads,
+            commands::resume_all_downloads,
+            commands::rename_downloaded,
         ])
         .run(tauri::generate_context!())
         .expect("WeBodown 启动失败");
