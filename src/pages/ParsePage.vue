@@ -17,6 +17,9 @@ const emit = defineEmits(["toast", "goto"]);
 const text = ref("");
 const parsing = ref(false);
 
+/** 操作说明：默认收起，保持首屏聚焦；展开内容见模板 help-body */
+const showHelp = ref(false);
+
 /** 主按钮磁吸：轻微朝鼠标偏移（±4px），移开弹回。只动 transform。 */
 const magnetWrap = ref(null);
 function magnetMove(event) {
@@ -1037,6 +1040,97 @@ function kindLabel(kind) {
       </div>
     </section>
 
+    <!-- 操作说明：折叠卡片，展开后按「上手 → 解析 → 任务 → 设置 → 常见问题」组织 -->
+    <section class="card help">
+      <button class="help-head" :aria-expanded="showHelp" @click="showHelp = !showHelp">
+        <Icon name="fileText" class="help-icon" />
+        <span class="help-title">操作说明</span>
+        <span class="help-sub">三步上手 · 链接格式 · 任务管理 · 常见问题</span>
+        <span class="spacer"></span>
+        <Icon name="chevronDown" class="help-arrow" :class="{ open: showHelp }" />
+      </button>
+
+      <!-- 折叠体：grid 行高 0fr↔1fr 过渡，内容常驻，展开/收起是平滑的高度动画 -->
+      <div class="help-fold" :class="{ open: showHelp }">
+        <div class="help-fold-inner">
+          <div class="help-body">
+            <div class="help-sec">
+              <h3>快速上手</h3>
+              <ol class="help-steps">
+                <li>
+                  <b>登录（可选）</b>：点右上角头像，扫码或网页登录。
+                  不登录也能下载公开内容；登录后可下载自己的收藏、关注列表，并解锁更全的视频清晰度档位。
+                </li>
+                <li>
+                  <b>解析</b>：把微博链接粘进上面的输入框（每行一个，可混合多行），
+                  点「开始解析」或按 <span class="kbd">Ctrl + Enter</span>。
+                </li>
+                <li>
+                  <b>下载</b>：解析完成后在「选择内容」表里勾选想要的条目，
+                  点「下载所选」；想全要就直接点「下载全部」。
+                </li>
+              </ol>
+            </div>
+
+            <div class="help-sec">
+              <h3>支持的链接</h3>
+              <table class="help-table">
+                <tbody>
+                  <tr><td>单条微博</td><td class="num">weibo.com/1234567/NbXxKq1aB · m.weibo.cn/status/NbXxKq1aB</td></tr>
+                  <tr><td>博主主页 / UID</td><td class="num">weibo.com/u/1234567 · 直接输入数字 1234567</td></tr>
+                  <tr><td>昵称链接</td><td class="num">weibo.com/n/博主昵称（自动解析）</td></tr>
+                  <tr><td>视频落地页</td><td class="num">weibo.com/tv/show/…（含播客音频）</td></tr>
+                  <tr><td>短链</td><td class="num">t.cn/…（自动跟随跳转）</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="help-sec">
+              <h3>解析与选择</h3>
+              <ul class="help-list">
+                <li>多行来源自动去重；重复内容会合并，不会重复下载。</li>
+                <li>博主主页首次只加载第一页，「继续解析」往后翻页，「解析全部」一次拉完（条数多时耗时较长）。</li>
+                <li>序号由旧到新（最旧为 1），文件名默认带序号，便于对照发布时间。</li>
+                <li>「下载设置」里的清晰度与图片规格只对本次下载生效，默认档位在设置页修改。</li>
+                <li>「重命名已下载」会按当前命名模板整理历史文件，可在弹窗里先预览再执行。</li>
+              </ul>
+            </div>
+
+            <div class="help-sec">
+              <h3>任务管理（传输页）</h3>
+              <ul class="help-list">
+                <li>每个任务都有 暂停 / 继续 / 取消；顶部有 全部暂停 / 全部开始 / 清除已结束。</li>
+                <li>同时最多下载 2 个任务，其余自动排队；并发数可在「设置 · 下载」调整（1–5）。</li>
+                <li>暂停、取消、退出甚至断电后进度都保存在断点文件里，继续或重新下载会自动续传。</li>
+                <li>完成后「打开」用默认播放器/看图工具打开文件，「打开位置」在资源管理器中定位。</li>
+              </ul>
+            </div>
+
+            <div class="help-sec">
+              <h3>文件与设置</h3>
+              <ul class="help-list">
+                <li>保存目录与文件夹层级（默认 <span class="num">博主/年-月</span>）在「设置 · 下载」修改。</li>
+                <li>文件命名模板支持魔法变量（标题、博主、序号等），在「设置 · 文件命名」里点击变量即可插入。</li>
+                <li>重名处理三选一：跳过（默认）/ 覆盖 / 自动追加序号。</li>
+                <li>应用更新在「设置 · 应用更新」手动检查，安装后自动重启。</li>
+              </ul>
+            </div>
+
+            <div class="help-sec">
+              <h3>常见问题</h3>
+              <ul class="help-list">
+                <li><b>显示未登录？</b>重新登录一次即可；凭据只存在本机，不会上传。</li>
+                <li><b>视频不是 1080P？</b>登录后档位更全；个别帖子本身就只提供低档位或需要会员。</li>
+                <li><b>下载进度不动？</b>微博接口偶发限流时任务会自动重试（默认 3 次），稍等即可。</li>
+                <li><b>找不到下载的文件？</b>在传输页点「打开位置」直接定位；路径见「设置 · 下载」。</li>
+                <li><b>内容库条数少？</b>微博接口只开放最近约 39 条收藏，更早的仅官方客户端可见。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 解析结果入口：成功的一律进「选择内容」页，这里只留入口与失败项 -->
     <section v-if="items.length" class="card results page-in">
       <header class="results-head">
@@ -1300,19 +1394,26 @@ input:focus {
   overflow-wrap: anywhere;
 }
 
-/* 输入页里的"已解析来源"入口 */
+/* 输入页里的"已解析来源"入口：固定两列网格，一排两个、宽窄统一 */
 .parsed-bar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 0;
+}
+
+/* 窄窗口放不下两个时就退成单列（标题省略号兜底） */
+@media (max-width: 860px) {
+  .parsed-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .parsed-chip {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  max-width: 100%;
+  min-width: 0;
   padding: 7px 12px;
   font-size: 12.5px;
   color: var(--text);
@@ -1326,8 +1427,15 @@ input:focus {
   background: var(--raised);
 }
 
+/* 类型标签与条数不参与收缩，标题占满剩余宽度后省略 */
+.parsed-chip .kind,
+.parsed-chip .num {
+  flex: none;
+}
+
 .parsed-chip .chip-title {
-  max-width: 320px;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1416,14 +1524,15 @@ input:focus {
   min-height: 0;
 }
 
-/* 输入页竖向占满窗口：两张卡分摊高度，卡片本身的空白也就被填满了 */
+/* 输入页：卡片垂直排列，高度都按内容走——窗口有富余时下方留底色，
+   不把卡片硬撑成空壳（说明卡与结果卡都遵循这条） */
 .parse-page:not(.fill-height) {
   display: flex;
   flex-direction: column;
   min-height: 100%;
 }
 
-/* 解析链接卡：高度按内容，**不参与拉伸**，多余高度全给结果卡。 */
+/* 解析链接卡：高度按内容，**不参与拉伸**。 */
 .parse-page:not(.fill-height) > .card {
   display: flex;
   flex: 0 1 auto;
@@ -1437,24 +1546,11 @@ input:focus {
   height: 110px;
 }
 
-/* 解析结果卡：高度**只由分配决定**（flex-basis: 0），不被明细列表的内容撑高。 */
+/* 解析结果卡：高度按内容——空状态不再被拉成大空壳；
+   明细列表自带 108px 上限并在框内滚，条数多也不会撑高整页 */
 .parse-page:not(.fill-height) > .results {
-  flex: 1 1 0;
-  min-height: 260px;
-}
-
-.parse-page:not(.fill-height) > .results .skipped-box {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
+  flex: 0 0 auto;
   min-height: 0;
-}
-
-.parse-page:not(.fill-height) > .results .skipped-list {
-  flex: 1 1 auto;
-  /* 至少露出 3 行（每行 26px），不够就在框内滚 */
-  min-height: 80px;
-  max-height: none;
 }
 
 /* 选择内容页：解析结果独立成一页，表格 + 分批加载 */
@@ -2068,5 +2164,170 @@ h2 {
 @keyframes parse-shimmer {
   from { transform: translateX(-130%); }
   to { transform: translateX(130%); }
+}
+
+/* ── 操作说明：折叠卡片 ── */
+.help {
+  padding: 4px 8px;
+}
+
+/* 输入页是三卡分摊窗口高度的布局：说明卡只按内容高度走，
+   不吃「> .card」的 300px 最小高度（那是留给输入卡与结果卡的），
+   折叠后整卡就只剩标题一行 */
+.parse-page:not(.fill-height) > .card.help {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+/* 折叠体：行高 0fr↔1fr 过渡（内容常驻，展开/收起是平滑的高度动画）；
+   「减少动态」下由全局规则自动降级为瞬切 */
+.help-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--motion) var(--ease-out);
+}
+
+.help-fold.open {
+  grid-template-rows: 1fr;
+}
+
+.help-fold-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.help-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.help-head:hover {
+  background: var(--hover);
+}
+
+.help-icon {
+  flex: none;
+  width: 19px;
+  height: 19px;
+  color: var(--accent);
+}
+
+.help-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.help-sub {
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.help-arrow {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--faint);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+
+.help-arrow.open {
+  transform: rotate(180deg);
+}
+
+.help-body {
+  padding: 2px 14px 16px;
+}
+
+.help-sec + .help-sec {
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.help-sec h3 {
+  margin: 0 0 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-dark);
+}
+
+/* 章节标题前缀小竖条：与「解析来源」步骤条的强调语言一致 */
+.help-sec h3::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 12px;
+  margin-right: 7px;
+  vertical-align: -1.5px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.help-steps,
+.help-list {
+  margin: 0;
+  padding-left: 19px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.8px;
+  line-height: 1.75;
+  color: var(--muted);
+}
+
+.help-steps li::marker {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.help-steps b,
+.help-list b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.help-body .kbd {
+  padding: 1px 6px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.help-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.8px;
+  color: var(--muted);
+}
+
+.help-table td {
+  padding: 7px 10px 7px 0;
+  border-top: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+
+.help-table tr:first-child td {
+  border-top: none;
+}
+
+.help-table td:first-child {
+  width: 118px;
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.help-table .num {
+  overflow-wrap: anywhere;
 }
 </style>

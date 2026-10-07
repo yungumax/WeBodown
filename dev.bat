@@ -19,6 +19,9 @@ set "SDKVER=10.0.26100.0"
 set "VC_LIB=%WBO%.lldbin\x64_extract\Program Files\Microsoft Visual Studio 14.0\VC\lib\amd64"
 set "VC_INC=%WBO%.lldbin\headers_extract\Program Files\Microsoft Visual Studio 14.0\VC\include"
 set "VC1444_BIN=%WBO%.lldbin\vc1444\Contents\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64"
+rem 更新包签名密钥：tauri build 只读 TAURI_SIGNING_PRIVATE_KEY（值可为路径），
+rem TAURI_SIGNING_PRIVATE_KEY_PATH 仅 signer sign 用；两者都设，缺一会出未签名包
+set "TAURI_SIGNING_PRIVATE_KEY=D:\Zcode\_data\tauri-keys\bilidown.key"
 set "TAURI_SIGNING_PRIVATE_KEY_PATH=D:\Zcode\_data\tauri-keys\bilidown.key"
 set "TAURI_SIGNING_PRIVATE_KEY_PASSWORD="
 set "RUSTFLAGS=-C linker=%WBO%.lldbin\lld-link.exe -C link-arg=/nodefaultlib:msvcrt -C link-arg=/nodefaultlib:OLDNAMES -C link-arg=libcmt.lib -C link-arg=libucrt.lib -C link-arg=libvcruntime.lib"

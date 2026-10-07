@@ -14,7 +14,12 @@ VC_INC="$WBO_WIN\\.lldbin\\headers_extract\\Program Files\\Microsoft Visual Stud
 # 现代工具集（VC 14.44 vsix）：cl.exe + mspdb140.dll + 语言资源，cc-rs / rc.exe 用
 VC1444_BIN="$WBO_WIN\\.lldbin\\vc1444\\Contents\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64"
 
-# 更新包签名密钥（createUpdaterArtifacts 需要本地签名）
+# 更新包签名密钥（createUpdaterArtifacts 需要本地签名）。
+# 注意：tauri build/bundle 只读 TAURI_SIGNING_PRIVATE_KEY（值可为路径），
+# TAURI_SIGNING_PRIVATE_KEY_PATH 只被 `tauri signer sign` 子命令使用——
+# 两者都设，本地打包与手动签名才都可用（否则打包报
+# "A public key has been found, but no private key"，只出安装包、不出 .sig）。
+export TAURI_SIGNING_PRIVATE_KEY="D:\Zcode\_data\tauri-keys\bilidown.key"
 export TAURI_SIGNING_PRIVATE_KEY_PATH="D:\Zcode\_data\tauri-keys\bilidown.key"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 export RUSTFLAGS="-C linker=$WBO_WIN/.lldbin/lld-link.exe -C link-arg=/nodefaultlib:msvcrt -C link-arg=/nodefaultlib:OLDNAMES -C link-arg=libcmt.lib -C link-arg=libucrt.lib -C link-arg=libvcruntime.lib"

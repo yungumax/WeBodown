@@ -177,7 +177,7 @@ watch(
 </script>
 
 <template>
-  <div>
+  <div class="lib-page" :class="{ 'fill-height': loggedIn }">
     <section class="card">
       <div class="tabs">
         <button :class="{ active: tab === TAB.fav }" @click="switchTab(TAB.fav)">
@@ -531,6 +531,49 @@ h2 {
   justify-content: space-between;
   gap: 12px;
   margin-top: 14px;
+}
+
+/* ── 登录后占满可用高度（与解析页「选择内容」视图同一套布局语言）：
+   Tabs / 标题 / 搜索固定在顶部，卡片网格是唯一滚动区，
+   底部统计栏恒在窗口下沿——不用滚到底才出现 ── */
+.fill-height {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.fill-height > .card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  /* 圆角裁切 + 避免出现第二根页面滚动条 */
+  overflow: hidden;
+}
+
+.fill-height .cards {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* 给滚动条与卡片悬停微倾留出边缘空间 */
+  padding: 2px 6px 2px 2px;
+  margin: 14px -6px 0 -2px;
+}
+
+/* 有列表时：底部统计升格为固定底栏（顶缘分割线，不随内容滚走） */
+.fill-height .foot {
+  flex: none;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* 空列表 / 读取提示：占满剩余区域，内容垂直居中 */
+.fill-height .empty {
+  flex: 1;
+  min-height: 0;
+  align-items: center;
 }
 
 .count {

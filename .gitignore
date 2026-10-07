@@ -16,3 +16,6 @@ tmp/
 # 系统杂项
 .DS_Store
 Thumbs.db
+
+# 测试脚本与临时产物
+_test/
